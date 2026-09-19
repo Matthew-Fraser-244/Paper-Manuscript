@@ -1,0 +1,1338 @@
+---
+title: "Starship Diversity Paper Figures"
+output: html_notebook
+---
+
+### Figure 1: Sanctuary And Horizon Alignments
+```{bash, engine.opts='-l'}
+cd /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Sequence_Alignment/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod
+
+# Set-up the shell script in BlueBEAR
+nano Sanc_Bsoro_Aventri_Hor_Ptr_Pnod_Bash.sh
+
+# Paste the following code into the shell script
+###
+#!/bin/bash
+#SBATCH --job-name=Sanc_Bsoro_Aventri_Hor_Ptr_Pnod_lastz
+#SBATCH --mem=64G
+#SBATCH --time 24:00:00
+#SBATCH --cpus-per-task=32
+#SBATCH --qos=bbdefault
+set -e 
+# #Load the bear stack, R and GenomeAlign (in conda)
+module purge; module load bear-apps/2023a/live
+module load Miniforge3/24.1.2-0
+module load SAMtools
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate GenomeAlign
+
+# Specify WD for Files
+cd /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Sequence_Alignment/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod
+
+# Use cat command in terminal to combine subject and query fasta file into single new 
+cat *.fasta > Sanc_Bsoro_Aventri_Hor_Ptr_Pnod.fasta
+
+# Create a path to the FASTA file
+fasta_file="Sanc_Bsoro_Aventri_Hor_Ptr_Pnod.fasta"
+
+# Run lastz and output with useful fields
+# Re-name .txt file
+# Note most important setting is to report start2+ and end2+ which reports alignments on plus strand. This is REQUIRED for correct plotting of hits on the minus strand by gggenomes()
+echo "Starting lastz alignment"
+lastz ${fasta_file}[multiple] ${fasta_file}[multiple] --gapped --step=20 --seed=12of19 --output=Sanc_Bsoro_Aventri_Hor_Ptr_Pnod.txt --hspthresh=3000 --format=general:name1,strand1,start1,end1,length1,name2,strand2,start2+,end2+,length2,identity
+###
+
+#Ensure the script is executable
+chmod +x Sanc_Bsoro_Aventri_Hor_Ptr_Pnod_Bash.sh
+
+# Run the script
+sbatch Sanc_Bsoro_Aventri_Hor_Ptr_Pnod_Bash.sh
+
+```
+
+
+```{r}
+# Load required R Libraries
+library(gggenomes)
+library(ggplot2)
+library(tidyverse)
+library(ggnewscale)
+library(dplyr)
+
+# Specify WD for Files, Ensure Same As Before
+setwd("F:/Starships_Project_Data/Sequence_Alignment/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod")
+
+# Load LASTZ output; assuming it's a tab-delimited file with appropriate headers
+# Re-name .txt File
+lastz_output <-read.delim("F:/Starships_Project_Data/Sequence_Alignment/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod.txt", comment.char = "#", header = FALSE)
+
+# Define column names based on your LASTZ output format
+colnames(lastz_output) <- c("name1","strand1","start1","end1","length1","name2","strand2","start2","end2","length2","cov","identity")
+
+# filter out alignments less than 3000bp for clarity
+lastz_output <-filter(lastz_output, length1>=2000)%>%
+    mutate(identity = as.numeric(str_replace(identity, "%", "")))
+
+# Convert to a DataFrame compatible with gggenomes
+# Assuming you want to visualize links between name1 and name2
+lzlinks <- lastz_output %>%
+  transmute(
+    seq_id = name1,
+    start = start1,
+    end = end1,
+    seq_id2 = name2,
+    start2 = start2,
+    end2 = end2,
+    strand = strand2,  
+    perc_id = identity # Including the % identity column
+    ) 
+
+# Filter lzlinks so that it only features links >70% identity
+filt_lzlinks <- lzlinks %>%
+  filter(perc_id >65)
+view(filt_lzlinks)
+
+# If Alignment Involves GFF files (Eg. for Gene Annotations), processes and filters data into dataframe for use in sequence alignment
+filelist<-list.files(pattern = "\\.gff")
+gfflist <-lapply(filelist, function(file) {
+  read.delim(file, comment.char = "#", header = FALSE)})
+
+# If needed, can specify gff files manually and further specify sequences within file
+# gff_CS10 <- read.delim("~/Desktop/Matthew_data/Sequence_Alignment/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod.gff", header = FALSE, comment.char = "#", sep = "\t", stringsAsFactors = FALSE) %>%
+#  filter(V1 %in% c("CS10_Chr08_Sanc"))
+
+# Combine the gffs into one and assign column and gene names
+# Make sure to specify whether using gfflist or individual gff files in list()
+comb_gff<-do.call(rbind, gfflist)
+# comb_gff<-do.call(rbind,  list())
+colnames(comb_gff) <- c("chr","source","type","start","end","dot","strand","dot2","Feature")
+
+# Edit the comb_gff dataframe so that only desired annotation predictions are present depending on the source
+get_annotations <- function(
+    gff,
+    sources = NULL,
+    types = NULL
+) {
+  df <- gff
+
+  if (!is.null(sources)) {
+    df <- df %>% filter(source %in% sources)
+  }
+
+  if (!is.null(types)) {
+    df <- df %>% filter(type %in% types)
+  }
+
+  df
+}
+
+# Select source or types
+# Eg. If want to include only predicted TEs from EarlGrey, or only genes from Helixer 
+comb_gff_plot1 <- get_annotations(comb_gff, sources = "Geneious", types = c("gene",  "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "TPR_12", "Patatin", "TE", "Abhydrolase", "Ankyrin Repeat", "Anmk", "APH", "BTB", "Ca-dependent channel, 7TM region", "CAP", "CorA", "DUF1996", "DUF3425", "EST1 DNA Binding", "Flocculin", "Fungal-specific TF", "FAD-binding", "GH18", "HAD", "HAMP", "HIRAN", "Histone-lysine N-methyltransferase", "JmjC_SET", "Lactamase", "MFS", "NACHT Domain", "NmrA", "p450", "Phosphatase", "PNGase A", "Protein Kinase", "RRM", "RTC4", "SAM", "SnoaL", "Syntaxin", "WD Domain", "Zinc Finger", "Zn Cluster", "Zot", "Myb_DNA-binding", "NB-ARC Domain", "Phosphorylase", "Ribonuclease", "PG acyl-chain remodelling", "Kinesin", "Incompatibility protein", "HeLo-like Domain"))
+comb_gff_plot2 <- get_annotations(comb_gff, sources = c("Helixer", "Geneious", "Genbank", "maker" ), types = c("gene",  "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "TPR_12", "Patatin", "TE", "Abhydrolase", "Ankyrin Repeat", "Anmk", "APH", "BTB", "Ca-dependent channel, 7TM region", "CAP", "CorA", "DUF1996", "DUF3425", "EST1 DNA Binding", "Flocculin", "Fungal-specific TF", "FAD-binding", "GH18", "HAD", "HAMP", "HIRAN", "Histone-lysine N-methyltransferase", "JmjC_SET", "Lactamase", "MFS", "NACHT Domain", "NmrA", "p450", "Phosphatase", "PNGase A", "Protein Kinase", "RRM", "RTC4", "SAM", "SnoaL", "Syntaxin", "WD Domain", "Zinc Finger", "Zn Cluster", "Zot", "Myb_DNA-binding", "NB-ARC Domain", "Phosphorylase", "Ribonuclease", "PG acyl-chain remodelling", "Kinesin", "Incompatibility protein", "HeLo-like Domain"))
+comb_gff_plot3 <- get_annotations(comb_gff, sources = c("Earl_Grey", "Geneious"), types = c("gene",  "YR", "HET", "NLR", "Patatin-PLP", "TPR-repeat", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "primer_bind", "HP", "IR", "TIR", "HaT_Transposase", "ToxA", "FabD/lysophospholipase-like protein", "Tc5 Transposase", "TPR_12", "Patatin", "LINE/Rex-Babar", "LINE/Tad1", "LINE/I", "LTR", "LTR/Copia", "LTR/Gypsy", "DNA", "DNA/hAT-Restless", "DNA/TcMar-Fot1", "DNA/TcMar-Tc1", "Unknown", "TE", "Abhydrolase", "Ankyrin Repeat", "Anmk", "APH", "BTB", "Ca-dependent channel, 7TM region", "CAP", "CorA", "DUF1996", "DUF3425", "EST1 DNA Binding", "Flocculin", "Fungal-specific TF", "FAD-binding", "GH18", "HAD", "HAMP", "HIRAN", "Histone-lysine N-methyltransferase", "JmjC_SET", "Lactamase", "MFS", "NACHT Domain", "NmrA", "p450", "Phosphatase", "PNGase A", "Protein Kinase", "RRM", "RTC4", "SAM", "SnoaL", "Syntaxin", "WD Domain", "Zinc Finger", "Zn Cluster", "Zot", "Myb_DNA-binding", "NB-ARC Domain", "Phosphorylase", "Ribonuclease", "PG acyl-chain remodelling", "Kinesin", "Incompatibility protein", "HeLo-like Domain"))
+
+# Specify gene annotations present within "type" column of comb_gff dataframe for plotting
+# If some of the annotations have slight name variations, can allow these to be recognised as single type
+# Can specify priority, to dictate which of any overlapping annotations are shown over others
+
+# Genes for Plot 1:
+genes_plot1<- comb_gff_plot1 %>%
+  transmute(
+    seq_id=chr,
+    start= start,
+    end = end,
+    strand= strand,
+    feat_id = type)%>%
+filter(feat_id %in% c(
+    "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "TPR_12", "Patatin", "TE", "Abhydrolase", "Ca-dependent channel, 7TM region",  "DUF1996", "FAD-binding", "Fungal-specific TF", "GH18",  "JmjC_SET", "Protein Kinase","RTC4", "Zinc Finger", "Zn Cluster", "Histone-lysine N-methyltransferase", "Myb_DNA-binding"
+  )) %>%
+mutate(
+    feat_id = ifelse(feat_id == "ToxhAT", "ToxTA", feat_id),
+    feat_id = ifelse(feat_id == "Patatin", "Patatin-PLP", feat_id),
+    feat_id = ifelse(feat_id == "TPR_12", "TPR-repeat", feat_id),
+        feat_id = ifelse(feat_id == "TE", "Unknown TE", feat_id),
+        feat_id = ifelse(feat_id == "Histone-lysine N-methyltransferase", "HMT", feat_id),
+
+    priority = case_when(
+      feat_id == "IR" ~ 99,
+      feat_id == "TIR" ~ 90,
+      feat_id == "ToxA" ~ 85,
+      feat_id == "ToxTA" ~ 80,
+      feat_id == "NLR" ~ 80,
+      feat_id == "gene" ~ 1,  
+      TRUE ~ 50)
+  ) %>%
+  arrange(priority)
+
+# Genes for Plot 2:
+genes_plot2<- comb_gff_plot2 %>%
+  transmute(
+    seq_id=chr,
+    start= start,
+    end = end,
+    strand= strand,
+    feat_id = type)%>%
+filter(feat_id %in% c(
+    "gene", "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "TPR_12", "Patatin", "TE", "Abhydrolase", "Ca-dependent channel, 7TM region",  "DUF1996", "FAD-binding", "Fungal-specific TF", "GH18",  "JmjC_SET", "Protein Kinase","RTC4", "Zinc Finger", "Zn Cluster", "Histone-lysine N-methyltransferase", "Myb_DNA-binding"
+  )) %>%
+mutate(
+    feat_id = ifelse(feat_id == "Toxin_ToxA", "ToxA", feat_id),
+    feat_id = ifelse(feat_id == "ToxhAT", "ToxTA", feat_id),
+    feat_id = ifelse(feat_id == "Tc5", "Tc5 Transposase", feat_id),
+    feat_id = ifelse(feat_id == "hp", "HP", feat_id),
+    feat_id = ifelse(feat_id == "ir", "IR", feat_id),
+    feat_id = ifelse(feat_id == "Patatin", "Patatin-PLP", feat_id),
+    feat_id = ifelse(feat_id == "TPR_12", "TPR-repeat", feat_id),
+        feat_id = ifelse(feat_id == "TE", "Unknown TE", feat_id),
+        feat_id = ifelse(feat_id == "Histone-lysine N-methyltransferase", "HMT", feat_id),
+
+
+    priority = case_when(
+      feat_id == "IR" ~ 99,
+      feat_id == "TIR" ~ 90,
+      feat_id == "ToxA" ~ 85,
+      feat_id == "ToxTA" ~ 80, 
+      feat_id == "NLR" ~ 80,
+      feat_id == "gene" ~ 1,  
+      TRUE ~ 50)
+  ) %>%
+  arrange(priority)
+
+# Genes for Plot 3:
+genes_plot3<- comb_gff_plot3 %>%
+  transmute(
+    seq_id=chr,
+    start= start,
+    end = end,
+    strand= strand,
+    feat_id = type)%>%
+filter(feat_id %in% c(
+    "YR", "HET", "NLR", "Patatin-PLP", "TPR-repeat",
+   "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "primer_bind", "HP", "IR", "TIR", "HaT_Transposase", "ToxA", "FabD/lysophospholipase-like protein", "Tc5 Transposase", "TPR_12", "Patatin", "LINE/Rex-Babar", "LINE/Tad1", "LINE/I" ,"LTR", "LTR/Copia", "LTR/Gypsy", "DNA", "DNA/hAT-Restless", "DNA/TcMar-Fot1", "DNA/TcMar-Tc1", "Unknown", "Abhydrolase", "Ca-dependent channel, 7TM region",  "DUF1996", "FAD-binding", "Fungal-specific TF", "GH18",  "JmjC_SET", "Protein Kinase","RTC4", "Zinc Finger", "Zn Cluster", "Histone-lysine N-methyltransferase", "Myb_DNA-binding"
+  )) %>%
+mutate(
+    feat_id = ifelse(feat_id == "Toxin_ToxA", "ToxA", feat_id),
+    feat_id = ifelse(feat_id == "ToxhAT", "ToxTA", feat_id),
+    feat_id = ifelse(feat_id == "Tc5", "Tc5 Transposase", feat_id),
+    feat_id = ifelse(feat_id == "hp", "HP", feat_id),
+    feat_id = ifelse(feat_id == "ir", "IR", feat_id),
+    feat_id = ifelse(feat_id == "Patatin", "Patatin-PLP", feat_id),
+    feat_id = ifelse(feat_id == "TPR_12", "TPR-repeat", feat_id),
+    feat_id = ifelse(feat_id == "TE", "Unknown TE", feat_id),
+    feat_id = ifelse(feat_id == "Histone-lysine N-methyltransferase", "HMT", feat_id),
+
+    priority = case_when(
+      feat_id == "IR" ~ 99,
+      feat_id == "TIR" ~ 90,
+      feat_id == "ToxA" ~ 85,
+      feat_id == "ToxTA" ~ 80,  
+      feat_id == "NLR" ~ 80,
+      feat_id == "gene" ~ 1,  
+      TRUE ~ 50)
+  ) %>%
+  arrange(priority)
+# Read the FASTA file into a seq object, ensure name is changed
+# Inlcude only sequences filtered that link with both Sanctuary and Horizon
+Sanc_seq <- read_seqs("F:/Starships_Project_Data/Sequence_Alignment/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod.fasta")
+
+```
+
+```{bash}
+# Set WD and activate Conda
+cd /mnt/f/Starships_Project_Data/Sequence_Alignment/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod
+
+source ~/.bashrc
+conda init
+conda activate bedtools
+
+# Specify input FASTA file
+FASTA_INPUT="Sanc_Bsoro_Aventri_Hor_Ptr_Pnod.fasta"
+
+# Extract base name for output files
+NAME=$(basename "$FASTA_INPUT")
+NAME="${NAME%.*}"
+
+# Index the FASTA
+samtools faidx "$FASTA_INPUT"
+
+# Create 1 kb windows across all sequences
+bedtools makewindows -g "${FASTA_INPUT}.fai" -w 1000 > "${NAME}_1kb_windows.bed"
+
+# Calculate AT-richness for each window
+bedtools nuc -fi "$FASTA_INPUT" -bed "${NAME}_1kb_windows.bed" | \
+awk 'BEGIN{OFS="\t"} NR>1 {print $1, $2, $3, $4}' > "${NAME}_at_richness.bed"
+
+```
+
+```{r}
+# Read in the AT-richness file into a feature object
+AT_richness <- read_feats("F:/Starships_Project_Data/Sequence_Alignment/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod/Sanc_Bsoro_Aventri_Hor_Ptr_Pnod_at_richness.bed",
+                        col_names = c("seq_id", "start", "end", "score"))%>% 
+                        mutate(score =as.numeric(score), feat_id='AT_cont')
+
+# Create bins for each sequence and put into single dataframe
+# This allows to edit order, names, and group multiple sequences in the same bin for adjacent alignment against a single sequence.
+
+Sanc_bins <- tibble(
+  seq_id = c(
+"Achlamyd_SC11_tig01_Front"             
+,"Achlamyd_SC11_tig02_Front"             , "Achlamyd_SC11_tig03_Front"             
+, "Achlamyd_SC11_tig04_Front"             , "Achlamyd_SC11_tig10_Front"             
+,"Arosae_BKA58_scaff5_Front"              ,"Aventri_BMP2768_Scaff40_Frontier"             
+, "Bgigan_17CL005_scaff26_Sanctuary"       ,"Bgigan_17LC008_scaff50_Sanctuary_Start"
+,"Bgigan_17LC008_scaff303_Sanctuary_End" , "Bmaydis_BM-1-MG-1_tig111_Sanctuary"           
+, "Boryzae_F1409_Scaff4_Sanctuary"  ,"Bsp_L1-2_tig02_Sanctuary", "Bsp_L1-2_tig29_Sanctuary",   "Bvictor_FI3_tig06_Sanctuary"         
+, "Bsoro_CS10_Chr03_Sanc" ,"Bsoro_CS10_Chr08_Sanc"               
+, "Bsoro_CS27_Chr08_Sanc", "Bsoro_WAI2411_Chr02_Sanc",  "Bsoro_WAI2431_Chr07_Sanc"    ,"Bsoro_WAI2432_tig045_chr08_chr07_Sanc", "Bsoro_WAI3285_Chr02_Sanc",  "Bsoro_WAI3295_tig122_Sanc",  "Bsoro_WAI3382_Chr06_Sanc", "Bsoro_WAI3384_Chr16_Sanc", "Bsoro_WAI3398_Chr04_Sanc"                  
+, "Pbromi_83-6011.2_Node2_Hor"                  
+, "Pdactyl_IR_2_1.1_Node96_Hor" , "Pgolestan_SN11IR_6_1.1_tig323_tig91_Horizon"  , "Pnod_C316-42F_tig777_Hor_Pt1"
+, "Pnod_C316-42F_tig248rc_Hor_Pt2" , "Pnod_C316-42F_tig419_Hor_Pt3"     
+, "Pnod_C316-42F_tig894rc_Hor_Pt4" ,  "Pnod_C316-42F_tig1781rc_Hor_Pt5"       
+, "Pnod_C316-42F_tig2136_Hor_Pt6"      ,"Pnod_DAOMC182701_tig02_Hor"              
+, "Pnod_G211-5_tig62_Hor_Start" , "Pnod_G211-5_tig80_Hor_Mid"
+, "Pnod_G211-5_tig03_Hor_ToxTA" , "Pnod_SN15_Chr05_Horiz", "Ppseudonod_18332-5_node127rc_Hor" , "Ppseudonod_18332-5_node139_Hor", "Ppseudonod_18332-5_node212_Hor" , "Ppseudonod_18332-5_node112rc_Hor"       
+, "Ppseudonod_HARTNEY_Node151_Hor"
+, "Ppseudonod_HARTNEY_Node297_Hor", "Ppseudonod_HARTNEY_Node252_Hor"
+, "Ppseudonod_HARTNEY_Node136rc_Hor", "Ppseudonod_HARTNEY_Node231_Hor"
+, "Ppseudonod_HARTNEY_Node141rc_Hor", "Ppseudonod_HARTNEY_Node182rc_Hor" , "Psem_CCB06_scaff53_Sanc", "Ptr_1CBFP_cont1.4_Horiz" 
+, "Ptr_Alg3-24x_tig52_Sanc"                ,"Ptr_D308_tig03_Sanc"                   
+, "Ptr_Den17_tig93_Horizon"                ,"Ptr_G9-7_tig150_Sanc"                  
+, "Ptr_I-33-16_tig42_Horizon"              ,"Ptr_I-33-16_tig51_Sanc"                
+, "Ptr_I-33-16_tig56_Sanc"                 ,"Ptr_I-33-16_tig76_Sanc"                
+, "Ptr_I-33-16_tig91_Sanc"                 ,"Ptr_I-34-1_tig121_Horizon" , "Ptr_I-73-1_tig03_Horizon"             
+, "Ptr_K11_Hor_Extended"  , "Ptr_K11_tig113_Sanctuary",   "Ptr_K11_tig165_Horizon" ,"Ptr_K6_Hor_Extended" , "Ptr_K6_tig105rc_Sanctuary_Start" , "Ptr_K6_tig148_Sanctuary_End" , "Ptr_K6_tig163_Horizon"                
+, "Ptr_K9_Hor_Extended" , "Ptr_K9_tig158_tig163_Sanctuary", "Ptr_K9_tig86_Horizon", "Ptr_M4_chr6_Horiz"                   ,"Ptr_SC22-2_tig156_Sanc"                
+, "Ptr_SW21-5_tig62_Sanc"                  ,"Ptr_T103-1_tig144_Horizon_Start" 
+, "Ptr_T103-1_tig175rc_Horizon_Mid"    , "Ptr_T103-1_tig174rc_Horizon_End"  
+  )
+) %>%
+  mutate(
+    bin_id = case_when(
+      
+    seq_id == "Achlamyd_SC11_tig01_Front"  ~ "A. chlamydospora SC11 (tig01) Sanctuary",
+      seq_id == "Achlamyd_SC11_tig02_Front"  ~ "A. chlamydospora SC11 (tig02) Sanctuary",
+      seq_id == "Achlamyd_SC11_tig03_Front"  ~ "A. chlamydospora SC11 (tig03) Sanctuary",
+      seq_id == "Achlamyd_SC11_tig04_Front"  ~ "A. chlamydospora SC11 (tig04) Sanctuary",
+      seq_id == "Achlamyd_SC11_tig10_Front"  ~ "A. chlamydospora SC11 (tig10) Sanctuary",
+      seq_id == "Arosae_BKA58_scaff5_Front"  ~ "A. rosae BKA58 (scaff5) Sanctuary",
+      seq_id == "Aventri_BMP2768_Scaff40_Frontier"  ~ "A. ventricosa (BMP 2768) Sanctuary",
+      
+      seq_id %in% c("Bgigan_17LC008_scaff50_Sanctuary_Start",
+            "Bgigan_17LC008_scaff303_Sanctuary_End")  ~ "B. gigantea (17LC008) Sanctuary",
+      seq_id == "Bgigan_17CL005_scaff26_Sanctuary"    ~ "B. gigantea (17CL005) Sanctuary",
+      seq_id == "Bvictor_FI3_tig06_Sanctuary"         ~ "B. victoriae (FI3) Sanctuary",
+      seq_id == "Boryzae_F1409_Scaff4_Sanctuary"      ~ "B. oryzae (F1409) Sanctuary",
+      seq_id == "Bsp_L1-2_tig02_Sanctuary"            ~ "B. sp. L1-2 (tig02) Sanctuary",
+      seq_id == "Bsp_L1-2_tig29_Sanctuary"            ~ "B. sp. L1-2 (tig29) Sanctuary",
+      seq_id == "Bmaydis_BM-1-MG-1_tig111_Sanctuary"  ~ "B. maydis (BM-1-MG-1) Sanctuary",
+      seq_id == "Bsoro_CS10_Chr08_Sanc"               ~ "B. sorokinana (CS10 Chr08) Sanctuary",
+      seq_id == "Bsoro_CS27_Chr08_Sanc"               ~ "B. sorokinana (CS27) Sanctuary",
+      seq_id == "Bsoro_CS10_Chr03_Sanc"               ~ "B. sorokinana (CS10 Chr03) Sanctuary",
+      seq_id == "Bsoro_WAI2411_Chr02_Sanc"               ~ "B. sorokinana (WAI2411) Sanctuary",
+      seq_id == "Bsoro_WAI2431_Chr07_Sanc"               ~ "B. sorokinana (WAI2431) Sanctuary",
+      seq_id == "Bsoro_WAI2432_tig045_chr08_chr07_Sanc"  ~ "B. sorokinana (WAI2432) Sanctuary",
+      seq_id == "Bsoro_WAI3285_Chr02_Sanc"               ~ "B. sorokinana (WAI3285) Sanctuary",
+      seq_id == "Bsoro_WAI3295_tig122_Sanc"              ~ "B. sorokinana (WAI3295) Sanctuary",
+      seq_id == "Bsoro_WAI3382_Chr06_Sanc"               ~ "B. sorokinana (WAI3382) Sanctuary",
+      seq_id == "Bsoro_WAI3384_Chr16_Sanc"               ~ "B. sorokinana (WAI3384) Sanctuary",
+      seq_id == "Bsoro_WAI3398_Chr04_Sanc"               ~ "B. sorokinana (WAI3398) Sanctuary",
+    
+      seq_id == "Ptr_K11_tig113_Sanctuary"          ~ "P. tritici-repentis (K11) Sanctuary",
+      seq_id == "Ptr_K9_tig158_tig163_Sanctuary"    ~ "P. tritici-repentis (K9) Sanctuary",
+      seq_id %in% c("Ptr_K6_tig105rc_Sanctuary_Start",
+                    "Ptr_K6_tig148_Sanctuary_End")  ~ "P. tritici-repentis (K6) Sanctuary",
+      seq_id == "Ptr_Alg3-24x_tig52_Sanc"       ~ "P. tritici-repentis (Alg3-24x) Sanctuary",
+      seq_id == "Ptr_D308_tig03_Sanc"           ~ "P. tritici-repentis (D308) Sanctuary",
+      seq_id == "Ptr_G9-7_tig150_Sanc"          ~ "P. tritici-repentis (G9-7) Sanctuary",
+      seq_id == "Ptr_I-33-16_tig51_Sanc"  ~ "P. tritici-repentis (I-33-16 tig51) Sanctuary",
+      seq_id == "Ptr_I-33-16_tig56_Sanc"  ~ "P. tritici-repentis (I-33-16 tig56) Sanctuary",
+      seq_id == "Ptr_I-33-16_tig76_Sanc"  ~ "P. tritici-repentis (I-33-16 tig76) Sanctuary",
+      seq_id == "Ptr_I-33-16_tig91_Sanc"  ~ "P. tritici-repentis (I-33-16 tig91) Sanctuary",
+      seq_id == "Ptr_SC22-2_tig156_Sanc"  ~ "P. tritici-repentis (SC22-2) Sanctuary",
+      seq_id == "Ptr_SW21-5_tig62_Sanc"   ~ "P. tritici-repentis (SW21-5) Sanctuary",
+      seq_id == "Psem_CCB06_scaff53_Sanc"   ~ "P. semeniperda (CCB06) Sanctuary",
+    
+      seq_id == "Ptr_Den17_tig93_Horizon"         ~ "P. tritici-repentis (Den17) Horizon",
+      seq_id == "Ptr_I-33-16_tig42_Horizon"       ~ "P. tritici-repentis (I-33-16) Horizon",
+      seq_id == "Ptr_I-34-1_tig121_Horizon"       ~ "P. tritici-repentis (I-34-1) Horizon",
+      seq_id %in% c("Ptr_T103-1_tig144_Horizon_Start", 
+                    "Ptr_T103-1_tig175rc_Horizon_Mid",    
+          "Ptr_T103-1_tig174rc_Horizon_End" )      ~ "P. tritici-repentis (T103-1) Horizon",
+      seq_id == "Ptr_I-73-1_tig03_Horizon"         ~ "P. tritici-repentis (I-73-1) Horizon",
+      seq_id == "1CBFP_cont1.4_Horiz"              ~ "P. tritici-repentis (1C-BFP) Horizon",
+      seq_id == "Ptr_K11_Hor_Extended"             ~ "P. tritici-repentis (K11) Horizon",
+      seq_id == "Ptr_K6_Hor_Extended"              ~ "P. tritici-repentis (K6) Horizon",
+      seq_id == "Ptr_K9_Hor_Extended"              ~ "P. tritici-repentis (K9) Horizon",
+      seq_id == "Ptr_M4_chr6_Horiz"                ~ "P. tritici-repentis (M4) Horizon",
+      
+      seq_id == "Pnod_SN15_Chr05_Horiz"            ~ "P. nodorum (SN15) Horizon",
+      seq_id == "Pnod_DAOMC182701_tig02_Hor"         ~ "P. nodorum (DAOMC182701) Horizon",
+      seq_id %in% c("Pnod_G211-5_tig62_Hor_Start" , "Pnod_G211-5_tig80_Hor_Mid"
+, "Pnod_G211-5_tig03_Hor_ToxTA")                   ~ "P. nodorum (G211-5) Horizon",
+      seq_id %in% c("Pnod_C316-42F_tig777_Hor_Pt1"
+, "Pnod_C316-42F_tig248rc_Hor_Pt2" , "Pnod_C316-42F_tig419_Hor_Pt3"     
+, "Pnod_C316-42F_tig894rc_Hor_Pt4" ,  "Pnod_C316-42F_tig1781rc_Hor_Pt5"       
+, "Pnod_C316-42F_tig2136_Hor_Pt6" )                ~ "P. nodorum (C316-42F) Horizon",
+      
+      seq_id == "Pgolestan_SN11IR_6_1.1_tig323_tig91_Horizon"   ~ "P. golestanensis (SN11IR_6_1.1) Horizon",
+      seq_id == "Pdactyl_IR_2_1.1_Node96_Hor"              ~ "P. dactylidigena (IR_2_1.1) Horizon",
+      seq_id == "Pbromi_83-6011.2_Node2_Hor"              ~ "P. bromicola (83.6011-2) Horizon",
+      seq_id %in% c("Ppseudonod_HARTNEY_Node151_Hor", "Ppseudonod_HARTNEY_Node297_Hor",
+                  "Ppseudonod_HARTNEY_Node252_Hor", "Ppseudonod_HARTNEY_Node136rc_Hor",      
+                  "Ppseudonod_HARTNEY_Node231_Hor", "Ppseudonod_HARTNEY_Node141rc_Hor", 
+                "Ppseudonod_HARTNEY_Node182rc_Hor") ~ "P. pseudonodorum (HARTNEY) Sanctuary",
+      seq_id %in% c("Ppseudonod_18332-5_node127rc_Hor" , 
+                    "Ppseudonod_18332-5_node139_Hor", 
+                    "Ppseudonod_18332-5_node212_Hor" , 
+                    "Ppseudonod_18332-5_node112rc_Hor") ~ "P. pseudonodorum (18332-5) Sanctuary",
+
+      TRUE ~ seq_id
+    ) 
+  ) %>%
+  left_join(Sanc_seq %>% select(seq_id, length), by = "seq_id")
+
+# Arrange bins for specific plotting order
+# Sanctuary and Horizon Alignment Across Species
+Sanc_bins_ordered1 <- Sanc_bins %>%
+  mutate(
+    bin_id = factor(
+      bin_id,
+      levels = c(
+        "A. ventricosa (BMP 2768) Sanctuary",
+        "B. sorokinana (CS10 Chr08) Sanctuary",
+        "P. tritici-repentis (M4) Horizon",        
+        "P. nodorum (SN15) Horizon"
+      )
+    )
+  ) %>%
+  filter(!is.na(bin_id)) %>%
+  arrange(bin_id)
+
+# All Sanctuary
+Sanc_bins_ordered8 <- Sanc_bins %>%
+  mutate(
+    bin_id = factor(
+      bin_id,
+      levels = c(
+        "P. tritici-repentis (K6) Sanctuary",
+        "P. tritici-repentis (K11) Sanctuary",
+        "P. tritici-repentis (K9) Sanctuary",
+        "B. sorokinana (CS10 Chr03) Sanctuary",
+        "B. sorokinana (CS27) Sanctuary",
+        "B. sorokinana (CS10 Chr08) Sanctuary",
+        "A. chlamydospora SC11 (tig01) Sanctuary",
+        "B. maydis (BM-1-MG-1) Sanctuary",
+        "A. chlamydospora SC11 (tig02) Sanctuary",
+        "A. chlamydospora SC11 (tig03) Sanctuary",
+        "A. chlamydospora SC11 (tig04) Sanctuary",
+        "A. chlamydospora SC11 (tig10) Sanctuary",
+        "A. ventricosa (BMP 2768) Sanctuary",
+        "B. sorokinana (WAI3398) Sanctuary",
+        "B. sorokinana (WAI2431) Sanctuary",
+        "B. sorokinana (WAI3295) Sanctuary",
+        "B. sorokinana (WAI2411) Sanctuary",
+        "B. sorokinana (WAI3382) Sanctuary",
+        "B. sorokinana (WAI2432) Sanctuary",
+        "B. sorokinana (WAI3384) Sanctuary",
+        "B. gigantea (17LC008) Sanctuary",
+        "B. oryzae (F1409) Sanctuary",
+        "B. sp. L1-2 (tig02) Sanctuary",
+        "B. victoriae (FI3) Sanctuary",
+        "B. sp. L1-2 (tig29) Sanctuary",
+        "B. gigantea (17CL005) Sanctuary",
+        "P. semeniperda (CCB06) Sanctuary",
+        "P. tritici-repentis (Alg3-24x) Sanctuary", 
+        "P. tritici-repentis (D308) Sanctuary",
+        "P. tritici-repentis (G9-7) Sanctuary",
+        "P. tritici-repentis (I-33-16 tig51) Sanctuary",
+        "P. tritici-repentis (I-33-16 tig56) Sanctuary",
+        "P. tritici-repentis (I-33-16 tig76) Sanctuary",
+        "P. tritici-repentis (I-33-16 tig91) Sanctuary",
+        "P. tritici-repentis (SC22-2) Sanctuary",
+        "P. tritici-repentis (SW21-5) Sanctuary"
+      )
+    )
+  ) %>%
+  filter(!is.na(bin_id)) %>%
+  arrange(bin_id)
+
+# All Horizon
+Sanc_bins_ordered9 <- Sanc_bins %>%
+  mutate(
+    bin_id = factor(
+      bin_id,
+      levels = c(
+        "P. bromicola (83.6011-2) Horizon",
+        "P. dactylidigena (IR_2_1.1) Horizon",
+        "P. pseudonodorum (HARTNEY) Sanctuary",
+        "P. pseudonodorum (18332-5) Sanctuary",
+        "P. golestanensis (SN11IR_6_1.1) Horizon",
+        "P. tritici-repentis (I-73-1) Horizon",
+        "P. nodorum (C316-42F) Horizon",
+        "P. nodorum (DAOMC182701) Horizon",
+        "P. nodorum (G211-5) Horizon",
+        "P. tritici-repentis (I-34-1) Horizon",
+        "P. tritici-repentis (T103-1) Horizon",
+        "P. tritici-repentis (I-33-16) Horizon",
+        "P. tritici-repentis (Den17) Horizon",        
+        "P. tritici-repentis (1C-BFP) Horizon",
+        "P. tritici-repentis (K6) Horizon",
+        "P. tritici-repentis (K11) Horizon",
+        "P. tritici-repentis (K9) Horizon",        
+        "P. tritici-repentis (M4) Horizon",
+        "P. nodorum (SN15) Horizon"
+      )
+    )
+  ) %>%
+  filter(!is.na(bin_id)) %>%
+  arrange(bin_id)
+
+# Key Sanctuary
+Sanc_bins_ordered10 <- Sanc_bins %>%
+  mutate(
+    bin_id = factor(
+      bin_id,
+      levels = c(
+        "P. tritici-repentis (K9) Sanctuary",
+        "B. sorokinana (CS10 Chr03) Sanctuary",
+        "B. sorokinana (CS10 Chr08) Sanctuary",
+        "A. chlamydospora SC11 (tig10) Sanctuary",
+        "A. ventricosa (BMP 2768) Sanctuary",
+        "B. sorokinana (WAI2411) Sanctuary",
+        "B. gigantea (17LC008) Sanctuary",
+        "B. oryzae (F1409) Sanctuary",
+        "B. sp. L1-2 (tig02) Sanctuary",
+        "B. victoriae (FI3) Sanctuary",
+        "B. sp. L1-2 (tig29) Sanctuary",
+        "B. gigantea (17CL005) Sanctuary",
+        "B. maydis (BM-1-MG-1) Sanctuary"
+      )
+    )
+  ) %>%
+  filter(!is.na(bin_id)) %>%
+  arrange(bin_id)
+
+# Key Horizon
+Sanc_bins_ordered11 <- Sanc_bins %>%
+  mutate(
+    bin_id = factor(
+      bin_id,
+      levels = c(
+        "P. dactylidigena (IR_2_1.1) Horizon",
+        "P. pseudonodorum (18332-5) Sanctuary",
+        "P. golestanensis (SN11IR_6_1.1) Horizon",
+        "P. tritici-repentis (I-73-1) Horizon",
+        "P. nodorum (DAOMC182701) Horizon",
+        "P. tritici-repentis (K9) Horizon",        
+        "P. tritici-repentis (M4) Horizon",
+        "P. nodorum (SN15) Horizon"
+      )
+    )
+  ) %>%
+  filter(!is.na(bin_id)) %>%
+  arrange(bin_id)
+
+# Key Sanctuary & Horizon
+Sanc_bins_ordered12 <- Sanc_bins %>%
+  mutate(
+    bin_id = factor(
+      bin_id,
+      levels = c(
+        "P. tritici-repentis (K9) Sanctuary",
+        "B. sorokinana (CS10 Chr03) Sanctuary",
+        "A. ventricosa (BMP 2768) Sanctuary",
+        "B. sorokinana (WAI2411) Sanctuary",
+        "B. gigantea (17LC008) Sanctuary",
+        "B. oryzae (F1409) Sanctuary",
+        "P. semeniperda (CCB06) Sanctuary",
+        "B. sorokinana (CS10 Chr08) Sanctuary",
+        "P. pseudonodorum (18332-5) Sanctuary",
+        "P. tritici-repentis (I-73-1) Horizon",
+        "P. golestanensis (SN11IR_6_1.1) Horizon",
+        "P. dactylidigena (IR_2_1.1) Horizon",
+        "P. tritici-repentis (M4) Horizon",      
+        "P. tritici-repentis (K9) Horizon"       
+        )
+    )
+  ) %>%
+  filter(!is.na(bin_id)) %>%
+  arrange(bin_id)
+
+
+# Create gggenomes plot using LASTZ links based on % Identity
+# Sanctuary and Horizon Alignment Across Species
+lastz_plot1 <- gggenomes(seqs = Sanc_bins_ordered1, links = filt_lzlinks, genes = genes_plot1, feats =list(at=AT_richness)) + geom_seq() + geom_bin_label(expand_left = .4, size = 4) +
+  geom_link(aes(fill = perc_id), offset= 0.2, color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+  "gene" = "grey", "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ClassII" = "blue","ClassI" = "orange","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink", "Unknown TE" = "deeppink1", "Abhydrolase" = "orchid2", "Ankyrin Repeat" = "red4","Anmk" = "olivedrab2","APH" = "tomato","BTB" = "#b3de69","Ca-dependent channel, 7TM region" = "indianred3","CAP" = "#d9d9d9","CorA" = "darkmagenta","DUF1996" = "#ccebc5","DUF3425" = "#ffed6f","EST1 DNA Binding" = "#1f78b4", "FAD-binding" = "#f26728", "Flocculin" = "#33a02c","Fungal-specific TF" = "springgreen4","GH18" = "#b15928","HAD" = "lightslateblue","HIRAN" = "cyan2","HMT" = "#ffff99","JmjC_SET" = "lightgoldenrod1","Lactamase" = "lightcyan2","MFS" = "#b2df8a","NACHT Domain" = "#fb9a99","NmrA" = "#1b9e77","p450" = "hotpink2","Phosphatase" = "#7570b3","PNGase A" = "#e7298a","Protein Kinase" = "#e6ab02","RRM" = "springgreen2","RTC4" = "palevioletred4","SAM" = "snow2","SnoaL" = "#8c564b","Syntaxin" = "steelblue2","WD Domain" = "blue4","Zinc Finger" = "#fdc086","Zn Cluster" = "#beaed4","Zot" = "#ffff99", "Myb_DNA-binding" = "#d95f02","NB-ARC Domain" = "#7570b3","Phosphorylase"  = "#6a3d9a", "Ribonuclease" = "#66a61e")) + guides(fill= guide_legend(title = "Gene Type")) + geom_ribbon(aes(x=(x+xend)/2, ymin = y-0.15, ymax=(y-0.15)+((score-0.5)*0.3), group=seq_id), feats(at), fill='black',alpha=0.5)
+#print(lastz_plot1)
+
+
+# All Sanctuary
+lastz_plot8 <- gggenomes(seqs = Sanc_bins_ordered8, links = filt_lzlinks, genes = genes_plot1) + geom_seq() + geom_bin_label(expand_left = .4, size = 2.5) +
+  geom_link(aes(fill = perc_id), color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+  "gene" = "grey", "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ClassII" = "blue","ClassI" = "orange","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink", "Unknown TE" = "deeppink1", "Abhydrolase" = "orchid2", "Ankyrin Repeat" = "red4","Anmk" = "olivedrab2","APH" = "tomato","BTB" = "#b3de69","Ca-dependent channel, 7TM region" = "indianred3","CAP" = "#d9d9d9","CorA" = "darkmagenta","DUF1996" = "#ccebc5","DUF3425" = "#ffed6f","EST1 DNA Binding" = "#1f78b4", "FAD-binding" = "#f26728", "Flocculin" = "#33a02c","Fungal-specific TF" = "springgreen4","GH18" = "#b15928","HAD" = "lightslateblue","HIRAN" = "cyan2","HMT" = "#ffff99","JmjC_SET" = "lightgoldenrod1","Lactamase" = "lightcyan2","MFS" = "#b2df8a","NACHT Domain" = "#fb9a99","NmrA" = "#1b9e77","p450" = "hotpink2","Phosphatase" = "#7570b3","PNGase A" = "#e7298a","Protein Kinase" = "#e6ab02","RRM" = "springgreen2","RTC4" = "palevioletred4","SAM" = "snow2","SnoaL" = "#8c564b","Syntaxin" = "steelblue2","WD Domain" = "blue4","Zinc Finger" = "#fdc086","Zn Cluster" = "#beaed4","Zot" = "#ffff99", "Myb_DNA-binding" = "#d95f02","NB-ARC Domain" = "#7570b3","Phosphorylase"  = "#6a3d9a", "Ribonuclease" = "#66a61e")) + guides(fill= guide_legend(ncol = 1, title = "Gene Type"))
+#print(lastz_plot8)
+
+# All Horizons
+lastz_plot9 <- gggenomes(seqs = Sanc_bins_ordered9, links = filt_lzlinks, genes = genes_plot1) + geom_seq() + geom_bin_label(expand_left = .4, size = 2.5) +
+  geom_link(aes(fill = perc_id), color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+  "gene" = "grey", "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ClassII" = "blue","ClassI" = "orange","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink", "Unknown TE" = "deeppink1", "Abhydrolase" = "orchid2", "Ankyrin Repeat" = "red4","Anmk" = "olivedrab2","APH" = "tomato","BTB" = "#b3de69","Ca-dependent channel, 7TM region" = "indianred3","CAP" = "#d9d9d9","CorA" = "darkmagenta","DUF1996" = "#ccebc5","DUF3425" = "#ffed6f","EST1 DNA Binding" = "#1f78b4", "FAD-binding" = "#f26728", "Flocculin" = "#33a02c","Fungal-specific TF" = "springgreen4","GH18" = "#b15928","HAD" = "lightslateblue","HIRAN" = "cyan2","HMT" = "#ffff99","JmjC_SET" = "lightgoldenrod1","Lactamase" = "lightcyan2","MFS" = "#b2df8a","NACHT Domain" = "#fb9a99","NmrA" = "#1b9e77","p450" = "hotpink2","Phosphatase" = "#7570b3","PNGase A" = "#e7298a","Protein Kinase" = "#e6ab02","RRM" = "springgreen2","RTC4" = "palevioletred4","SAM" = "snow2","SnoaL" = "#8c564b","Syntaxin" = "steelblue2","WD Domain" = "blue4","Zinc Finger" = "#fdc086","Zn Cluster" = "#beaed4","Zot" = "#ffff99", "Myb_DNA-binding" = "#d95f02","NB-ARC Domain" = "#7570b3","Phosphorylase"  = "#6a3d9a", "Ribonuclease" = "#66a61e")) + guides(fill= guide_legend(ncol = 1, title = "Gene Type"))
+#print(lastz_plot9)
+
+# Key Sanctuary (+Frontier)
+lastz_plot10 <- gggenomes(seqs = Sanc_bins_ordered10, links = filt_lzlinks, genes = genes_plot1, feats =list(at=AT_richness)) + geom_seq() + geom_bin_label(expand_left = .4, size = 4) +
+  geom_link(aes(fill = perc_id), color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+  "gene" = "grey", "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ClassII" = "blue","ClassI" = "orange","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink", "Unknown TE" = "deeppink1", "Abhydrolase" = "orchid2", "Ankyrin Repeat" = "red4","Anmk" = "olivedrab2","APH" = "tomato","BTB" = "#b3de69","Ca-dependent channel, 7TM region" = "indianred3","CAP" = "#d9d9d9","CorA" = "darkmagenta","DUF1996" = "#ccebc5","DUF3425" = "#ffed6f","EST1 DNA Binding" = "#1f78b4", "FAD-binding" = "#f26728", "Flocculin" = "#33a02c","Fungal-specific TF" = "springgreen4","GH18" = "#b15928","HAD" = "lightslateblue","HIRAN" = "cyan2","HMT" = "#ffff99","JmjC_SET" = "lightgoldenrod1","Lactamase" = "lightcyan2","MFS" = "#b2df8a","NACHT Domain" = "#fb9a99","NmrA" = "#1b9e77","p450" = "hotpink2","Phosphatase" = "#7570b3","PNGase A" = "#e7298a","Protein Kinase" = "#e6ab02","RRM" = "springgreen2","RTC4" = "palevioletred4","SAM" = "snow2","SnoaL" = "#8c564b","Syntaxin" = "steelblue2","WD Domain" = "blue4","Zinc Finger" = "#fdc086","Zn Cluster" = "#beaed4","Zot" = "#ffff99", "Myb_DNA-binding" = "#d95f02","NB-ARC Domain" = "#7570b3","Phosphorylase"  = "#6a3d9a", "Ribonuclease" = "#66a61e")) + guides(fill= guide_legend(title = "Gene Type"))
+#print(lastz_plot10)
+
+# Key Horizons (Consolidated)
+lastz_plot11 <- gggenomes(seqs = Sanc_bins_ordered11, links = filt_lzlinks, genes = genes_plot1, feats =list(at=AT_richness)) + geom_seq() + geom_bin_label(expand_left = .4, size = 4) +
+  geom_link(aes(fill = perc_id), color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+  "gene" = "grey", "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ClassII" = "blue","ClassI" = "orange","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink", "Unknown TE" = "deeppink1", "Abhydrolase" = "orchid2", "Ankyrin Repeat" = "red4","Anmk" = "olivedrab2","APH" = "tomato","BTB" = "#b3de69","Ca-dependent channel, 7TM region" = "indianred3","CAP" = "#d9d9d9","CorA" = "darkmagenta","DUF1996" = "#ccebc5","DUF3425" = "#ffed6f","EST1 DNA Binding" = "#1f78b4", "FAD-binding" = "#f26728", "Flocculin" = "#33a02c","Fungal-specific TF" = "springgreen4","GH18" = "#b15928","HAD" = "lightslateblue","HIRAN" = "cyan2","HMT" = "#ffff99", "JmjC_SET" = "lightgoldenrod1","Lactamase" = "lightcyan2","MFS" = "#b2df8a","NACHT Domain" = "#fb9a99","NmrA" = "#1b9e77","p450" = "hotpink2","Phosphatase" = "#7570b3","PNGase A" = "#e7298a","Protein Kinase" = "#e6ab02","RRM" = "springgreen2","RTC4" = "palevioletred4","SAM" = "snow2","SnoaL" = "#8c564b","Syntaxin" = "steelblue2","WD Domain" = "blue4","Zinc Finger" = "#fdc086","Zn Cluster" = "#beaed4","Zot" = "#ffff99", "Myb_DNA-binding" = "#d95f02","NB-ARC Domain" = "#7570b3","Phosphorylase"  = "#6a3d9a", "Ribonuclease" = "#66a61e")) + geom_ribbon(aes(x=(x+xend)/2, ymin = y-0.1, ymax=(y-0.1)+((score-0.5)*0.3), group=seq_id), feats(at), fill='black',alpha=0.5) + guides(fill= guide_legend(title = "Gene Type"))
+#print(lastz_plot11)
+
+# Key Sanc & Hor
+lastz_plot12 <- gggenomes(seqs = Sanc_bins_ordered12, links = filt_lzlinks, genes = genes_plot1, feats =list(at=AT_richness)) + geom_seq(space = 0.7) + geom_bin_label(expand_left = .25, size = 2) +
+  geom_link(aes(fill = perc_id), offset= 0.2, color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+  "gene" = "grey", "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ClassII" = "blue","ClassI" = "orange","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink", "Unknown TE" = "deeppink1", "Abhydrolase" = "orchid2", "Ankyrin Repeat" = "red4","Anmk" = "olivedrab2","APH" = "tomato","BTB" = "#b3de69","Ca-dependent channel, 7TM region" = "indianred3","CAP" = "#d9d9d9","CorA" = "darkmagenta","DUF1996" = "#ccebc5","DUF3425" = "#ffed6f","EST1 DNA Binding" = "#1f78b4", "FAD-binding" = "#f26728", "Flocculin" = "#33a02c","Fungal-specific TF" = "springgreen4","GH18" = "#b15928","HAD" = "lightslateblue","HIRAN" = "cyan2","HMT" = "#ffff99","JmjC_SET" = "lightgoldenrod1","Lactamase" = "lightcyan2","MFS" = "#b2df8a","NACHT Domain" = "#fb9a99","NmrA" = "#1b9e77","p450" = "hotpink2","Phosphatase" = "#7570b3","PNGase A" = "#e7298a","Protein Kinase" = "#e6ab02","RRM" = "springgreen2","RTC4" = "palevioletred4","SAM" = "snow2","SnoaL" = "#8c564b","Syntaxin" = "steelblue2","WD Domain" = "blue4","Zinc Finger" = "#fdc086","Zn Cluster" = "#beaed4","Zot" = "#ffff99", "Myb_DNA-binding" = "#d95f02","NB-ARC Domain" = "#7570b3","Phosphorylase"  = "#6a3d9a", "Ribonuclease" = "#66a61e")) + geom_ribbon(aes(x=(x+xend)/2, ymin = y-0.18, ymax=(y-0.18)+((score-0.5)*0.45), group=seq_id), feats(at), fill='black',alpha=0.5) + guides(fill= guide_legend(ncol = 1, title = "Gene Type")) +
+  coord_cartesian(clip = "off", expand = FALSE)
+print(lastz_plot12)
+
+# Save the Plot: Specify the plot to save and dimension specifics
+setwd("F:/Starships_Project_Data/Figures")
+ggsave("Sanc_vs_Hor.png", lastz_plot1, width = 25, height = 20, units = "cm")
+#ggsave("Key_Sanc_Fig.png", lastz_plot10, width = 20, height = 12, units = "cm")
+#ggsave("Key_Hor_Fig.png", lastz_plot11, width = 20, height = 12, units = "cm")
+ggsave("Key_Sanc_and_Hor_Fig.png", lastz_plot12, width = 21, height = 29.7, units = "cm")
+ggsave("All_Sanc.pdf", lastz_plot8, width = 25, height = 45, units = "cm")
+ggsave("All_Hor.pdf", lastz_plot9, width = 25, height = 30, units = "cm")
+```
+
+
+```{r}
+# Use to align specific Starships easily
+
+Sanc_bins_ordered2 <- Sanc_bins %>%
+  mutate(
+    bin_id = factor(
+      bin_id,
+      levels = c(
+        "P. golestanensis (SN11IR_6_1.1) Horizon",
+        "P. tritici-repentis (I-73-1) Horizon",
+        "P. dactylidigena (IR_2_1.1) Horizon"
+      )
+    )
+  ) %>%
+  filter(!is.na(bin_id)) %>%
+  arrange(bin_id)
+  
+lastz_plot2 <- gggenomes(seqs = Sanc_bins_ordered2, links = filt_lzlinks, genes = genes_plot1) + geom_seq() + geom_bin_label(expand_left = .4, size = 4) +
+  geom_link(aes(fill = perc_id), color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+  "gene" = "grey", "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ClassII" = "blue","ClassI" = "orange","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink", "Unknown TE" = "deeppink1", "Abhydrolase" = "orchid2", "Ankyrin Repeat" = "red4","Anmk" = "olivedrab2","APH" = "tomato","BTB" = "#b3de69","Ca-dependent channel, 7TM region" = "indianred3","CAP" = "#d9d9d9","CorA" = "darkmagenta","DUF1996" = "#ccebc5","DUF3425" = "#ffed6f","EST1 DNA Binding" = "#1f78b4", "FAD-binding" = "#f26728", "Flocculin" = "#33a02c","Fungal-specific TF" = "springgreen4","GH18" = "#b15928","HAD" = "lightslateblue","HIRAN" = "cyan2","HMT" = "#ffff99","JmjC_SET" = "lightgoldenrod1","Lactamase" = "#fdbf6f","MFS" = "#b2df8a","NACHT Domain" = "#fb9a99","NmrA" = "#1b9e77","p450" = "hotpink3","Phosphatase" = "#7570b3","PNGase A" = "#e7298a","Protein Kinase" = "#e6ab02","RRM" = "springgreen2","RTC4" = "#a6761d","SAM" = "snow2","SnoaL" = "#8c564b","Syntaxin" = "steelblue2","WD Domain" = "blue4","Zinc Finger" = "#fdc086","Zn Cluster" = "#beaed4","Zot" = "#ffff99","Myb_DNA-binding" = "#d95f02","NB-ARC Domain" = "#7570b3","Phosphorylase"  = "#6a3d9a", "Ribonuclease" = "#66a61e")) + guides(fill= guide_legend(title = "Gene Type"))
+print(lastz_plot2)
+
+```
+
+### Figure 4a: ToxTA Alignment
+```{bash, engine.opts='-l'}
+cd /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Sequence_Alignment
+
+# Set-up the shell script in BlueBEAR
+nano ToxTA_All_Bash.sh
+
+# Paste the following code into the shell script
+###
+#!/bin/bash
+#SBATCH --job-name=ToxTA_All_lastz
+#SBATCH --mem=64G
+#SBATCH --time 5-00:00:00
+#SBATCH --cpus-per-task=32
+#SBATCH --qos=bbdefault
+set -e 
+# #Load the bear stack, R and GenomeAlign (in conda)
+module purge; module load bear-apps/2023a/live
+module load Miniforge3/24.1.2-0
+module load SAMtools
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate GenomeAlign
+
+# Specify WD for Files
+cd /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Nucelotide_Sequences/ToxTA
+
+# Use cat command in terminal to combine subject and query fasta file into single new 
+cat *.fasta > ToxTA_All.fasta
+
+mv /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Nucelotide_Sequences/ToxTA/ToxTA_All.fasta /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Sequence_Alignment/ToxTA_All
+cd /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Sequence_Alignment/ToxTA_All
+
+# Create a path to the FASTA file
+fasta_file="ToxTA_All.fasta"
+
+# Run lastz and output with useful fields
+# Re-name .txt file
+# Note most important setting is to report start2+ and end2+ which reports alignments on plus strand. This is REQUIRED for correct plotting of hits on the minus strand by gggenomes()
+echo "Starting lastz alignment"
+lastz ${fasta_file}[multiple] ${fasta_file}[multiple] --gapped --step=20 --seed=12of19 --output=ToxTA_All.txt --hspthresh=3000 --format=general:name1,strand1,start1,end1,length1,name2,strand2,start2+,end2+,length2,identity
+###
+
+#Ensure the script is executable
+chmod +x ToxTA_All_Bash.sh
+
+# Run the script
+sbatch ToxTA_All_Bash.sh
+
+```
+
+
+```{r}
+# Load required R Libraries
+library(gggenomes)
+library(ggplot2)
+library(tidyverse)
+library(ggnewscale)
+library(dplyr)
+
+# Specify WD for Files, Ensure Same As Before
+setwd("F:/Starships_Project_Data//Sequence_Alignment/ToxTA_All")
+
+# Load LASTZ output; assuming it's a tab-delimited file with appropriate headers
+# Re-name .txt File
+lastz_output <-read.delim("F:/Starships_Project_Data//Sequence_Alignment/ToxTA_All/ToxTA_All.txt", comment.char = "#", header = FALSE)
+
+# Define column names based on your LASTZ output format
+colnames(lastz_output) <- c("name1","strand1","start1","end1","length1","name2","strand2","start2","end2","length2","cov","identity")
+
+# filter out alignments less than 3000bp for clarity
+lastz_output <-filter(lastz_output, length1>=100)%>%
+    mutate(identity = as.numeric(str_replace(identity, "%", "")))
+
+# Convert to a DataFrame compatible with gggenomes
+# Assuming you want to visualize links between name1 and name2
+lzlinks <- lastz_output %>%
+  transmute(
+    seq_id = name1,
+    start = start1,
+    end = end1,
+    seq_id2 = name2,
+    start2 = start2,
+    end2 = end2,
+    strand = strand2,  
+    perc_id = identity # Including the % identity column
+    ) 
+
+# Filter lzlinks so that it only features links >70% identity
+filt_lzlinks <- lzlinks %>%
+  filter(perc_id >70)
+view(filt_lzlinks)
+
+# If Alignment Involves GFF files (Eg. for Gene Annotations), processes and filters data into dataframe for use in sequence alignment
+filelist<-list.files(pattern = "\\.gff")
+gfflist <-lapply(filelist, function(file) {
+  read.delim(file, comment.char = "#", header = FALSE)})
+
+# If needed, can specify gff files manually and further specify sequences within file
+# gff_CS10 <- read.delim("~/Desktop/Matthew_data/Sequence_Alignment/ToxTA_All/ToxTA_All.gff", header = FALSE, comment.char = "#", sep = "\t", stringsAsFactors = FALSE) %>%
+#  filter(V1 %in% c("CS10_Chr08_Sanc"))
+
+# Combine the gffs into one and assign column and gene names
+# Make sure to specify whether using gfflist or individual gff files in list()
+comb_gff<-do.call(rbind, gfflist)
+# comb_gff<-do.call(rbind,  list())
+colnames(comb_gff) <- c("chr","source","type","start","end","dot","strand","dot2","Feature")
+
+# Edit the comb_gff dataframe so that only desired annotation predictions are present depending on the source
+get_annotations <- function(
+    gff,
+    sources = NULL,
+    types = NULL
+) {
+  df <- gff
+
+  if (!is.null(sources)) {
+    df <- df %>% filter(source %in% sources)
+  }
+
+  if (!is.null(types)) {
+    df <- df %>% filter(type %in% types)
+  }
+
+  df
+}
+
+# Select source or types
+# Eg. If want to include only predicted TEs from EarlGrey, or only genes from Helixer 
+comb_gff_plot1 <- get_annotations(comb_gff, sources = "Geneious", types = c("gene",  "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "primer_bind", "HP", "hp", "IR", "ir", "TIR", "HaT_Transposase", "Transposase", "ToxA", "FabD/lysophospholipase-like protein", "Tc5 Transposase", "TPR_12", "Patatin", "TE", "EVM7_08.709", "EVM7_08.708", "EVM7_08.714"))
+comb_gff_plot2 <- get_annotations(comb_gff, sources = c("Helixer", "Geneious", "Genbank", "maker" ), types = c("gene",  "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "primer_bind", "HP", "IR", "TIR", "HaT_Transposase", "Transposase", "ToxA", "FabD/lysophospholipase-like protein", "Tc5 Transposase", "TPR_12", "Patatin"))
+comb_gff_plot3 <- get_annotations(comb_gff, sources = c("Earl_Grey", "Geneious"), types = c("gene",  "YR", "HET", "NLR", "Patatin-PLP", "TPR-repeat", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "primer_bind", "HP", "IR", "TIR", "HaT_Transposase", "Transposase", "ToxA", "FabD/lysophospholipase-like protein", "Tc5 Transposase", "TPR_12", "Patatin", "LINE/Rex-Babar", "LINE/Tad1", "LTR", "LTR/Copia", "LTR/Gypsy", "DNA", "DNA/hAT-Restless", "DNA/TcMar-Fot1", "DNA/TcMar-Tc1", "DNA/Kolobok-H", "Unknown"))
+
+# Specify gene annotations present within "type" column of comb_gff dataframe for plotting
+# If some of the annotations have slight name variations, can allow these to be recognised as single type
+# Can specify priority, to dictate which of any overlapping annotations are shown over others
+# Genes for Plot 1:
+genes_plot1<- comb_gff_plot1 %>%
+  transmute(
+    seq_id=chr,
+    start= start,
+    end = end,
+    strand= strand,
+    feat_id = type)%>%
+filter(feat_id %in% c(
+    "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "primer_bind", "HP", "hp", "IR", "ir", "TIR", "HaT_Transposase", "FabD/lysophospholipase-like protein", "Tc5 Transposase", "Transposase", "TPR_12", "Patatin", "ToxA", "TE", "EVM7_08.709", "EVM7_08.708", "EVM7_08.714"
+  )) %>%
+mutate(
+    feat_id = ifelse(feat_id == "Toxin_ToxA", "ToxA", feat_id),
+    feat_id = ifelse(feat_id == "ToxhAT", "ToxTA", feat_id),
+    feat_id = ifelse(feat_id == "Tc5", "Tc5 Transposase", feat_id),
+    feat_id = ifelse(feat_id == "hp", "HP", feat_id),
+    feat_id = ifelse(feat_id == "ir", "IR", feat_id),
+    feat_id = ifelse(feat_id == "Patatin", "Patatin-PLP", feat_id),
+    feat_id = ifelse(feat_id == "TPR_12", "TPR-repeat", feat_id),
+    feat_id = ifelse(feat_id == "TE", "Unknown TE", feat_id),
+    priority = case_when(
+      feat_id == "IR" ~ 99,
+      feat_id == "TIR" ~ 90,
+      feat_id == "ToxA" ~ 85,
+      feat_id == "Patatin-PLP" ~ 45,
+      feat_id == "gene" ~ 1,  
+      TRUE ~ 50)
+  ) %>%
+  arrange(priority)
+
+# Genes for Plot 2:
+genes_plot2<- comb_gff_plot2 %>%
+  transmute(
+    seq_id=chr,
+    start= start,
+    end = end,
+    strand= strand,
+    feat_id = type)%>%
+filter(feat_id %in% c(
+    "gene", "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "primer_bind", "HP", "IR", "TIR", "HaT_Transposase", "FabD/lysophospholipase-like protein", "Tc5 Transposase", "Transposase", "TPR_12", "Patatin", "ToxA"
+  )) %>%
+mutate(
+    feat_id = ifelse(feat_id == "Toxin_ToxA", "ToxA", feat_id),
+    feat_id = ifelse(feat_id == "ToxhAT", "ToxTA", feat_id),
+    feat_id = ifelse(feat_id == "Tc5", "Tc5 Transposase", feat_id),
+    feat_id = ifelse(feat_id == "hp", "HP", feat_id),
+    feat_id = ifelse(feat_id == "ir", "IR", feat_id),
+    feat_id = ifelse(feat_id == "Patatin", "Patatin-PLP", feat_id),
+    feat_id = ifelse(feat_id == "TPR_12", "TPR-repeat", feat_id),
+    priority = case_when(
+      feat_id == "IR" ~ 99,
+      feat_id == "TIR" ~ 90,
+      feat_id == "ToxA" ~ 85,
+            feat_id == "Patatin-PLP" ~ 84,
+      feat_id == "TPR-repeat" ~ 83,
+      feat_id == "gene" ~ 1,  
+      TRUE ~ 50)
+  ) %>%
+  arrange(priority)
+
+# Genes for Plot 3:
+genes_plot3<- comb_gff_plot3 %>%
+  transmute(
+    seq_id=chr,
+    start= start,
+    end = end,
+    strand= strand,
+    feat_id = type)%>%
+filter(feat_id %in% c(
+    "YR", "HET", "NLR", "Patatin-PLP", "TPR-repeat",
+   "DUF3723", "Secondary Metabolite", "DUF3435", "primer_bind", "HP", "IR", "TIR", "HaT_Transposase", "FabD/lysophospholipase-like protein", "Tc5 Transposase", "ToxA", "Transposase", "TPR_12", "Patatin", "LINE/Rex-Babar", "LINE/Tad1", "LTR", "LTR/Copia", "LTR/Gypsy", "DNA", "DNA/hAT-Restless", "DNA/TcMar-Fot1", "DNA/TcMar-Tc1", "DNA/Kolobok-H", "Unknown"
+  )) %>%
+mutate(
+    feat_id = ifelse(feat_id == "Toxin_ToxA", "ToxA", feat_id),
+    feat_id = ifelse(feat_id == "ToxhAT", "ToxTA", feat_id),
+    feat_id = ifelse(feat_id == "Tc5", "Tc5 Transposase", feat_id),
+    feat_id = ifelse(feat_id == "hp", "HP", feat_id),
+    feat_id = ifelse(feat_id == "ir", "IR", feat_id),
+    feat_id = ifelse(feat_id == "Patatin", "Patatin-PLP", feat_id),
+    feat_id = ifelse(feat_id == "TPR_12", "TPR-repeat", feat_id),
+    priority = case_when(
+      feat_id == "IR" ~ 99,
+      feat_id == "TIR" ~ 90,
+      feat_id == "ToxA" ~ 85,
+      feat_id == "Patatin-PLP" ~ 45,
+      feat_id == "gene" ~ 1,  
+      TRUE ~ 50)
+  ) %>%
+  arrange(priority)
+
+# Read the FASTA file into a seq object, ensure name is changed
+# Inlcude only sequences filtered that link with both Sanctuary and Horizon
+Sanc_seq <- read_seqs("F:/Starships_Project_Data//Sequence_Alignment/ToxTA_All/ToxTA_All.fasta")
+
+```
+
+```{bash}
+# Set WD and activate Conda
+cd F:/Starships_Project_Data//Sequence_Alignment/ToxTA_All
+
+source ~/.bashrc
+conda init
+conda activate bedtools
+
+# Specify input FASTA file
+FASTA_INPUT="ToxTA_All.fasta"
+
+# Extract base name for output files
+NAME=$(basename "$FASTA_INPUT")
+NAME="${NAME%.*}"
+
+# Index the FASTA
+samtools faidx "$FASTA_INPUT"
+
+# Create 1 kb windows across all sequences
+bedtools makewindows -g "${FASTA_INPUT}.fai" -w 1000 > "${NAME}_1kb_windows.bed"
+
+# Calculate AT-richness for each window
+bedtools nuc -fi "$FASTA_INPUT" -bed "${NAME}_1kb_windows.bed" | \
+awk 'BEGIN{OFS="\t"} NR>1 {print $1, $2, $3, $4}' > "${NAME}_at_richness.bed"
+
+```
+
+```{r}
+# Read in the AT-richness file into a feature object
+AT_richness <- read_feats("F:/Starships_Project_Data//Sequence_Alignment/ToxTA_All/ToxTA_All_at_richness.bed",
+                        col_names = c("seq_id", "start", "end", "score"))%>% 
+                        mutate(score =as.numeric(score), feat_id='AT_cont')
+
+# Create bins for each sequence and put into single dataframe
+# This allows to edit order, names, and group multiple sequences in the same bin for adjacent alignment against a single sequence.
+
+Sanc_bins <- tibble(
+  seq_id = c(
+    "CS10_Chr08_Sanc_ToxTA",
+    "WAI2411_Chr02_Sanc_ToxTA",
+    "WAI2431_Chr07_Sanc_ToxTA",
+    "WAI2432_tig045_chr08_chr07_Sanc_ToxTA",
+    "WAI3285_Chr02_Sanc_ToxTA",
+    "WAI3295_tig122_Sanc_ToxTA",
+    "WAI3382_Chr06_Sanc_ToxTA",
+    "WAI3384_Chr16_Sanc_ToxTA",
+    "WAI3398_Chr04_Sanc_ToxTA",
+    "Aventri_BMP2768_Sanctuary_ToxTA",
+    "1CBFP_cont1.4_Horiz_ToxTA",
+    "Den17_Horizon_ToxTA",
+    "I-33-16_Horizon_ToxTA",
+    "I-34-1_Horizon_ToxTA",
+    "I73-1_contig_3_Horizon_ToxTA",
+    "K11_Horizon_ToxTA",
+    "K6_Horizon_ToxTA",
+    "K9_Horizon_ToxTA",
+    "M4_chr6_Horiz_ToxTA",
+    "SN15_Chr05_Horiz_ToxTA",
+    "T103-1_tig144_Horizon_Start_ToxTA",
+    "T103-1_tig175rc_Horizon_Mid_ToxTA",
+    "T103-1_tig174rc_Horizon_End_ToxTA",
+    "006_SN-004_tig74rc_ToxTA",
+    "B313-13_tig31rc_ToxTA",
+    "C16-42F_tig894rc_ToxTA_start",
+    "C16-42F_tig1781rc_ToxTA_Mid",
+    "C16-42_tig2136_ToxTA_End",
+    "DAOMC182701_tig02_ToxTA",
+    "G211-5_tig03rc_ToxTA",
+    "Pnod_LDN03-Sn4_Chr08_ToxTA",
+    "Pnod_Sn2000_Chr08_ToxTA",
+    "S415-3_tig05_ToxTA",
+    "S419-22F_tig62_ToxTA"
+  )
+) %>%
+  mutate(
+    bin_id = case_when(
+      seq_id == "CS10_Chr08_Sanc_ToxTA"                   ~ "B. sorokinana (H1, H2 & H3)",
+      seq_id == "WAI2411_Chr02_Sanc_ToxTA"               ~ "B. sorokinana (WAI2411)",
+      seq_id == "WAI2431_Chr07_Sanc_ToxTA"               ~ "B. sorokinana (WAI2431)",
+      seq_id == "WAI2432_tig045_chr08_chr07_Sanc_ToxTA"  ~ "B. sorokinana (WAI2432)",
+      seq_id == "WAI3285_Chr02_Sanc_ToxTA"               ~ "B. sorokinana (WAI3285)",
+      seq_id == "WAI3295_tig122_Sanc_ToxTA"              ~ "B. sorokinana (WAI3295)",
+      seq_id == "WAI3382_Chr06_Sanc_ToxTA"               ~ "B. sorokinana (WAI3382)",
+      seq_id == "WAI3384_Chr16_Sanc_ToxTA"               ~ "B. sorokinana (WAI3384)",
+      seq_id == "WAI3398_Chr04_Sanc_ToxTA"               ~ "B. sorokinana (WAI3398)",
+      seq_id == "Aventri_BMP2768_Sanctuary_ToxTA"       ~ "A. ventricosa (BMP 2768)",
+      seq_id == "1CBFP_cont1.4_Horiz_ToxTA"              ~ "P. tritici-repentis (1C-BFP & Den17)",
+      seq_id == "Den17_Horizon_ToxTA"                  ~ "P. tritici-repentis (Den17)",
+      seq_id == "I-33-16_Horizon_ToxTA"                  ~ "P. tritici-repentis (I-33-16)",
+      seq_id == "I-34-1_Horizon_ToxTA"                   ~ "P. tritici-repentis (I-34-1)",
+      seq_id == "I73-1_contig_3_Horizon_ToxTA"           ~ "P. tritici-repentis (I-73-1 & I-34-1)",
+      seq_id == "K11_Horizon_ToxTA"                      ~ "P. tritici-repentis (K11, K6 & K9)",
+      seq_id == "K6_Horizon_ToxTA"                       ~ "P. tritici-repentis (K6)",
+      seq_id == "K9_Horizon_ToxTA"                       ~ "P. tritici-repentis (K9)",
+      seq_id == "M4_chr6_Horiz_ToxTA"                    ~ "P. tritici-repentis (M4)",
+      seq_id == "SN15_Chr05_Horiz_ToxTA"                 ~ "P. nodorum (SN15)",
+            seq_id %in% c("T103-1_tig144_Horizon_Start_ToxTA", "T103-1_tig175rc_Horizon_Mid_ToxTA",
+                          "T103-1_tig174rc_Horizon_End_ToxTA")     ~ "P. tritici-repentis (T103-1)",
+     seq_id == "006_SN-004_tig74rc_ToxTA"     ~ "P. nodorum (006_SN-004)",
+      seq_id == "B313-13_tig31rc_ToxTA"     ~ "P. nodorum (006_SN-004, B313-13, & S415-3)",
+      seq_id %in% c("C16-42F_tig894rc_ToxTA_start", "C16-42F_tig1781rc_ToxTA_Mid",
+                    "C16-42_tig2136_ToxTA_End")     ~ "P. nodorum (C316-42F)",
+      seq_id == "DAOMC182701_tig02_ToxTA"     ~ "P. nodorum (DAOMC182701)",
+      seq_id == "G211-5_tig03rc_ToxTA"     ~ "P. nodorum (G211-5)",
+      seq_id == "Pnod_LDN03-Sn4_Chr08_ToxTA"     ~ "P. nodorum (LDN03-Sn4)",
+      seq_id == "Pnod_Sn2000_Chr08_ToxTA"     ~ "P. nodorum (Sn2000)",
+      seq_id == "S415-3_tig05_ToxTA"     ~ "P. nodorum (S415-3)",
+      seq_id == "S419-22F_tig62_ToxTA"     ~ "P. nodorum (S419-22F)",
+      TRUE ~ seq_id
+    )
+  ) %>%
+  left_join(Sanc_seq %>% select(seq_id, length), by = "seq_id")
+
+
+# Arrange bins for specific plotting order
+Sanc_bins_summ <- Sanc_bins %>%
+  mutate(
+    bin_id = factor(
+      bin_id,
+      levels = c(
+        "P. nodorum (DAOMC182701)",
+        "P. nodorum (006_SN-004, B313-13, & S415-3)",
+        "P. nodorum (SN15)",
+        "P. tritici-repentis (M4)",
+        "P. tritici-repentis (I-73-1 & I-34-1)",
+        "P. tritici-repentis (1C-BFP & Den17)",
+        "A. ventricosa (BMP 2768)",
+        "B. sorokinana (H1, H2 & H3)",
+        "P. tritici-repentis (K11, K6 & K9)"
+
+      )
+    )
+  ) %>%
+  filter(!is.na(bin_id)) %>%
+  arrange(bin_id)
+
+# Create gggenomes plot using LASTZ links based on % Identity
+# Plot3: Plot featuring core annotations and TE annotation predictions from EarlGrey
+lastz_plot_Summ <- gggenomes(seqs = Sanc_bins_summ, links = filt_lzlinks, genes = genes_plot1, feats =list(at=AT_richness)) + geom_seq(space = 0.5) + geom_bin_label(expand_left = .4, size = 4) +
+  geom_link(aes(fill = perc_id), offset= 0.28, color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+ "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink","DUF3435" = "#29AB87","SDR" = "limegreen", "IR"= "salmon", "HP"= "darkblue", "HaT_Transposase" = "#FE6633", "Transposase" = "darkolivegreen2", "ToxA" = "turquoise", "FabD/lysophospholipase-like protein" = "beige", "Tc5 Transposase" = "#B8B0FF", "ClassI" = "darkorange", "LINE/Tad1" = "coral2", "LTR" = "darkorange2", "LTR/Copia" = "darkorange3", "LTR/Gypsy" = "darkorange4", "DNA" = "cornflowerblue", "DNA/hAT-Restless" = "deepskyblue3", "ClassII" = "blue3", "DNA/TcMar-Tc1" = "cadetblue", "DNA/Kolobok-H" = "darkslategrey", "Unknown TE" = "deeppink1", "EVM7_08.709" = "blueviolet", "EVM7_08.708" = "darkorchid4", "EVM7_08.714" = "mediumvioletred")) + geom_ribbon(aes(x=(x+xend)/2, ymin = y-0.25, ymax=(y-0.25)+((score-0.5)*0.4), group=seq_id), feats(at),alpha=0.5) + guides(fill= guide_legend(title = "Gene Type"))
+print(lastz_plot_Summ)
+
+# Save the Plot: Specify the plot to save and dimension specifics
+setwd("F:/Starships_Project_Data//Figures")
+ggsave("Key_ToxTA_Fig.png", lastz_plot_Summ, width = 20, height = 15, units = "cm")
+
+
+```
+
+### Figure 4b: ToxTA Pnod Diversity
+```{bash, engine.opts='-l'}
+cd /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Sequence_Alignment/Hor_Ptr_Pnod_ToxTA
+
+#Set-up the shell script in BlueBEAR
+nano Hor_Ptr_Pnod_ToxTA_multi-node_Bash.sh
+
+# Paste the following code into the shell script
+###
+#!/bin/bash
+#SBATCH --job-name=Hor_Ptr_Pnod_ToxTA_multi-node_lastz
+#SBATCH --mem=64G
+#SBATCH --time 5-00:00:00
+#SBATCH --cpus-per-task=32
+#SBATCH --qos=bbdefault
+set -e 
+# #Load the bear stack, R and GenomeAlign (in conda)
+module purge; module load bear-apps/2023a/live
+module load Miniforge3/24.1.2-0
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate GenomeAlign
+
+# Specify WD for Files
+cd /rds/projects/m/mcdonamc-hgt-transposons/Matthew_data/Sequence_Alignment/Hor_Ptr_Pnod_ToxTA
+
+# Create a path to the FASTA file
+fasta_file="Hor_Ptr_Pnod_ToxTA_multi-node.fasta"
+
+# Run lastz and output with useful fields
+# Re-name .txt file
+# Note most important setting is to report start2+ and end2+ which reports alignments on plus strand. This is REQUIRED for correct plotting of hits on the minus strand by gggenomes()
+echo "Starting lastz alignment"
+lastz ${fasta_file}[multiple] ${fasta_file}[multiple] --gapped --step=20 --seed=12of19 --output=Hor_Ptr_Pnod_ToxTA_multi-node.txt --hspthresh=3000 --format=general:name1,strand1,start1,end1,length1,name2,strand2,start2+,end2+,length2,identity
+###
+
+# Ensure the script is executable
+chmod +x Hor_Ptr_Pnod_ToxTA_multi-node_Bash.sh
+
+# Run the script
+sbatch Hor_Ptr_Pnod_ToxTA_multi-node_Bash.sh
+
+```
+
+```{r}
+# Load required R Libraries
+library(gggenomes)
+library(ggplot2)
+library(tidyverse)
+library(ggnewscale)
+library(dplyr)
+
+# Specify WD for Files, Ensure Same As Before
+setwd("F:/Starships_Project_Data//Sequence_Alignment/Hor_Ptr_Pnod_ToxTA")
+
+# Load LASTZ output; assuming it's a tab-delimited file with appropriate headers
+# Re-name .txt File
+lastz_output <-read.delim("F:/Starships_Project_Data//Sequence_Alignment/Hor_Ptr_Pnod_ToxTA/Hor_Ptr_Pnod_ToxTA_multi-node.txt", comment.char = "#", header = FALSE)
+
+# Define column names based on your LASTZ output format
+colnames(lastz_output) <- c("name1","strand1","start1","end1","length1","name2","strand2","start2","end2","length2","cov","identity")
+
+# filter out alignments less than 3000bp for clarity
+lastz_output <-filter(lastz_output, length1>=1000)%>%
+    mutate(identity = as.numeric(str_replace(identity, "%", "")))
+
+# Convert to a DataFrame compatible with gggenomes
+# Assuming you want to visualize links between name1 and name2
+lzlinks <- lastz_output %>%
+  transmute(
+    seq_id = name1,
+    start = start1,
+    end = end1,
+    seq_id2 = name2,
+    start2 = start2,
+    end2 = end2,
+    strand = strand2,  
+    perc_id = identity # Including the % identity column
+    ) 
+
+# Filter lzlinks so that it only features links >70% identity
+filt_lzlinks <- lzlinks %>%
+  filter(perc_id >85)
+view(filt_lzlinks)
+
+# If Alignment Involves GFF files (Eg. for Gene Annotations), processes and filters data into dataframe for use in sequence alignment
+filelist<-list.files(pattern = "\\.gff")
+gfflist <-lapply(filelist, function(file) {
+  read.delim(file, comment.char = "#", header = FALSE)})
+
+# If needed, can specify gff files manually and furhter specify sequences within file
+# gff_CS10 <- read.delim("~/Desktop/Matthew_data/Sequence_Alignment/Hor_Ptr_Pnod_ToxTA_multi-node/Hor_Ptr_Pnod_ToxTA_multi-node_All_LR.gff", header = FALSE, comment.char = "#", sep = "\t", stringsAsFactors = FALSE) %>%
+#  filter(V1 %in% c("CS10_Chr08_Sanc"))
+
+# Combine the gffs into one and assign column and gene names
+# Make sure to specify whether using gfflist or individual gff files in list()
+comb_gff<-do.call(rbind, gfflist)
+# comb_gff<-do.call(rbind,  list())
+colnames(comb_gff) <- c("chr","source","type","start","end","dot","strand","dot2","Feature")
+
+# Extract annotation names that in the "Features" column of comb_gff but not given distinct annotation types
+comb_gff <- comb_gff %>%
+ mutate(Name = str_extract(Feature, "Name=[^;]+"),
+         Name = str_replace(Name, "Name=", "")) %>%
+  mutate(type = ifelse(type == "gene" & !is.na(Name), Name, type)) %>%
+  select(-Name)
+
+# Specify gene annotations present within "type" column of comb_gff dataframe for plotting
+# If some of the annotations have slight name variations, can allow these to be recognised as single type
+# Can specify priority, to dictate which of any overlapping annotations are shown over others
+genes<- comb_gff %>%
+  transmute(
+    seq_id=chr,
+    start= start,
+    end = end,
+    strand= strand,
+    feat_id = type)%>%
+filter(feat_id %in% c(
+    "YR", "HET", "ClassII", "NLR", "Patatin-PLP", "TPR-repeat",
+    "ClassI", "DUF3723", "Secondary Metabolite", "DUF3435", "ToxhAT", "primer_bind", "ToxA",  "Transposase", "TE"
+  )) %>%
+mutate(
+    feat_id = ifelse(feat_id == "Toxin_ToxA", "ToxA", feat_id),
+    feat_id = ifelse(feat_id == "ToxhAT", "ToxTA", feat_id),
+    feat_id = ifelse(feat_id == "Tc5", "Tc5 Transposase", feat_id),
+    feat_id = ifelse(feat_id == "hp", "HP", feat_id),
+    feat_id = ifelse(feat_id == "ir", "IR", feat_id),
+    feat_id = ifelse(feat_id == "Patatin", "Patatin-PLP", feat_id),
+    feat_id = ifelse(feat_id == "TE", "Unknown TE", feat_id),
+    priority = case_when(
+      feat_id == "IR" ~ 99,
+      feat_id == "TIR" ~ 90,
+      feat_id == "ToxA" ~ 85,
+      feat_id == "Unknown TE" ~ 80,
+      feat_id == "gene" ~ 1,  
+      TRUE ~ 50)
+  ) %>%
+  arrange(priority)
+
+# Read the FASTA file into a seq object, ensure name is changed
+# Inlcude only sequences filtered that link with both Sanctuary and Horizon
+Sanc_seq <- read_seqs("F:/Starships_Project_Data//Sequence_Alignment/Hor_Ptr_Pnod_ToxTA/Hor_Ptr_Pnod_ToxTA_multi-node.fasta")
+
+```
+
+```{bash}
+# Set WD and activate Conda
+cd /mnt/f/Starships_Project_Data//Sequence_Alignment/Hor_Ptr_Pnod_ToxTA
+
+source ~/.bashrc
+conda init
+conda activate bedtools
+
+# Specify input FASTA file
+FASTA_INPUT="Hor_Ptr_Pnod_ToxTA_multi-node.fasta"
+
+# Extract base name for output files
+NAME=$(basename "$FASTA_INPUT")
+NAME="${NAME%.*}"
+
+# Index the FASTA
+samtools faidx "$FASTA_INPUT"
+
+# Create 1 kb windows across all sequences
+bedtools makewindows -g "${FASTA_INPUT}.fai" -w 1000 > "${NAME}_1kb_windows.bed"
+
+# Calculate AT-richness for each window
+bedtools nuc -fi "$FASTA_INPUT" -bed "${NAME}_1kb_windows.bed" | \
+awk 'BEGIN{OFS="\t"} NR>1 {print $1, $2, $3, $4}' > "${NAME}_at_richness.bed"
+
+```
+
+```{r}
+# Read in the AT-richness file into a feature object
+AT_richness <- read_feats("F:/Starships_Project_Data//Sequence_Alignment/Hor_Ptr_Pnod_ToxTA/Hor_Ptr_Pnod_ToxTA_multi-node_at_richness.bed",
+                        col_names = c("seq_id", "start", "end", "score"))%>% 
+                        mutate(score =as.numeric(score), feat_id='AT_cont')
+
+# Example 1: Aligning all sequences against each other
+Zoomed_Pnod <- tibble(
+  seq_id     = c(    "M4_chr6_Horiz_ToxTA_Flank", 
+    "SN15_Chr05_Horiz_ToxTA_Flank", 
+    "NODE_5_length_1342165_cov_13.583453_Iran_2005-2010_IR_B3.1A",
+    "NODE_10_length_1230314_cov_6.729976_SouthAfrica_1995_SA_134",
+    "NODE_52_length_85877_cov_11.983382_NewYork_1991_NY_330",
+    "NODE_56_length_112162_cov_9.047351_Texas_1992_TX_XA2.4",
+    "NODE_59_length_56868_cov_8.276978_Canada_2005_CASSILS",
+    "NODE_81_length_99272_cov_6.305068_China_2001_CHI_20A"),
+  zoom_start = c(0,0,0, 25000, 35000, 50000, 25000, 35000),
+  zoom_end   = c(40000,90000, 40000,65000, 75000, 90000, 65000, 75000)
+) %>%
+  mutate(
+    zoom_length = zoom_end - zoom_start,
+    bin_id = case_when(
+      seq_id == "M4_chr6_Horiz_ToxTA_Flank" ~ "M4",
+      seq_id == "SN15_Chr05_Horiz_ToxTA_Flank" ~ "SN15",
+      seq_id == "NODE_5_length_1342165_cov_13.583453_Iran_2005-2010_IR_B3.1A" ~ "2010_IR_B3.1A",
+      seq_id == "NODE_10_length_1230314_cov_6.729976_SouthAfrica_1995_SA_134" ~ "1995_SA_134",
+      seq_id == "NODE_52_length_85877_cov_11.983382_NewYork_1991_NY_330" ~ "1991_NY_330",
+      seq_id == "NODE_56_length_112162_cov_9.047351_Texas_1992_TX_XA2.4" ~ "1992_TX_XA2.4",
+      seq_id == "NODE_59_length_56868_cov_8.276978_Canada_2005_CASSILS" ~ "2005_CASSILS",
+      seq_id == "NODE_81_length_99272_cov_6.305068_China_2001_CHI_20A" ~ "2001_CHI_20A",
+      TRUE ~ seq_id
+    )
+  )
+
+# Creat Bin Orderings for each plot
+Pnod_bins_zoomed1 <- Zoomed_Pnod %>%
+  mutate(bin_id = factor(bin_id, levels = 
+c("1992_TX_XA2.4", "M4", "2001_CHI_20A",  "2010_IR_B3.1A",   "1991_NY_330", "2005_CASSILS",  "SN15")
+)) %>% filter(!is.na(bin_id)) %>%
+    transmute( bin_id, seq_id, length = zoom_length) %>%
+  arrange(bin_id)
+
+
+# Adjust coordinates for each sequence separately
+filt_lzlinks_zoom <- filt_lzlinks %>%
+  rowwise() %>%
+  mutate(
+    start  = ifelse(seq_id  %in% Zoomed_Pnod$seq_id,
+                    start  - Zoomed_Pnod$zoom_start[Zoomed_Pnod$seq_id == seq_id],
+                    start),
+    end    = ifelse(seq_id  %in% Zoomed_Pnod$seq_id,
+                    end    - Zoomed_Pnod$zoom_start[Zoomed_Pnod$seq_id == seq_id],
+                    end),
+    start2 = ifelse(seq_id2 %in% Zoomed_Pnod$seq_id,
+                    start2 - Zoomed_Pnod$zoom_start[Zoomed_Pnod$seq_id == seq_id2],
+                    start2),
+    end2   = ifelse(seq_id2 %in% Zoomed_Pnod$seq_id,
+                    end2   - Zoomed_Pnod$zoom_start[Zoomed_Pnod$seq_id == seq_id2],
+                    end2)
+  ) %>%
+  ungroup()
+
+# Adjust gene coordinates for zoomed sequences
+genes_zoom <- genes %>%
+  filter(seq_id %in% Pnod_bins_zoomed1$seq_id) %>%
+  left_join(Zoomed_Pnod, by = "seq_id") %>%   # adds zoom_start, zoom_end, zoom_length
+  mutate(
+    start = if_else(!is.na(zoom_start), start - zoom_start, start),
+    end   = if_else(!is.na(zoom_start), end   - zoom_start, end)
+  ) %>%
+  mutate(
+    start = if_else(!is.na(zoom_length), pmax(start, 0), start),
+    end   = if_else(!is.na(zoom_length), pmin(end, zoom_length), end)
+  ) %>%
+  filter(end > start) %>%
+  mutate(feat_id = as.character(feat_id)) %>%
+  select(-zoom_start, -zoom_end, -zoom_length) %>%
+  droplevels()
+
+# If using zoomed sequences add the following adjustment for AT richness coordinates
+AT_richness_zoom <- AT_richness %>%
+  left_join(Zoomed_Pnod, by = "seq_id") %>%
+  mutate(
+    start = if_else(!is.na(zoom_start), start - zoom_start, start),
+    end   = if_else(!is.na(zoom_start), end   - zoom_start, end)
+  ) %>%
+  filter(
+    (is.na(zoom_length)) |
+    (start >= 0 & end <= zoom_length)
+  ) %>%
+  select(-zoom_start, -zoom_end, -zoom_length)
+
+lastz_plot1 <- gggenomes(seqs = Pnod_bins_zoomed1, links = filt_lzlinks_zoom, genes = genes_zoom, feats =list(at=AT_richness_zoom)) + geom_seq() + geom_bin_label(expand_left = .4, size = 4) +
+  geom_link(aes(fill = perc_id), offset= 0.3, color = NA, alpha = 0.45, linewidth = 1) +
+  scale_fill_distiller(palette = "Spectral", name = "% Identity") +
+  new_scale_fill() +
+  geom_gene(aes(fill = feat_id), color = NA, size = 4) +
+  scale_fill_manual(values = c(
+ "YR" = "maroon","HET" = "skyblue","NLR" = "purple","Patatin-PLP" = "yellow","TPR-repeat" = "darkgreen","ToxTA" = "red","Secondary Metabolite" = "#f0e68c","DUF3723" = "pink","DUF3435" = "#29AB87","SDR" = "limegreen", "TIR" = "#D1E231", "IR"= "salmon", "HaT_Transposase" = "#FE6633", "Transposase" = "darkolivegreen2", "ToxA" = "turquoise", "FabD/lysophospholipase-like protein" = "beige", "Tc5 Transposase" = "#B8B0FF", "ClassI" = "darkorange", "ClassII" = "blue3", "Unknown TE" = "deeppink1")) + geom_ribbon(aes(x=(x+xend)/2, ymin = y-0.275, ymax=(y-0.275)+((score-0.5)*0.4), group=seq_id), feats(at),alpha=0.5) + guides(fill= guide_legend(title = "Gene Type"))
+print(lastz_plot1)
+
+# Save the Plot: Specify the plot to save and dimension specifics
+setwd("F:/Starships_Project_Data//Figures")
+ggsave("Fig_ToxTA_Pnod_Diversity.png", lastz_plot1, width = 20, height = 10, units = "cm")
+
+```
+
+
+
+
